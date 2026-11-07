@@ -70,6 +70,13 @@ body.testing { padding-bottom: 0; }
 .qtext p { margin: 0 0 .55em; }
 .qtext p:first-child { font-weight: 700; font-family: system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif; }
 .qtext p.item { padding-left: 1.6em; text-indent: -1.6em; }
+.qtext p.item.memo { padding-left: 3.4em; text-indent: -1.6em; position: relative; }
+.qtext .mk { position: absolute; left: 0; top: .1em; width: 1.6em; height: 1.6em; text-indent: 0; padding: 0;
+  border: 1.5px dashed #b9c2bd; border-radius: 6px; background: #fff; color: #c0392b; font-size: 1em; font-weight: 800;
+  line-height: 1; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.qtext .mk.on { border-style: solid; border-color: #c0392b; background: #fff5f3; }
+.qtext table.grid tr { transition: opacity .15s; }
+.qtext table.grid tr.dim { opacity: .22; }
 .qtext table { border-collapse: collapse; margin: .3em 0 .8em; }
 .qtext table.grid td { padding: 1px .55em; text-align: center; }
 .qtext table.grid tr:first-child td { color: #5d6964; }

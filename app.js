@@ -363,8 +363,36 @@ async function copyForAI(q, it) {
   toast('コピーしました。GeminiなどのAIのチャットに貼り付けてください', 3500);
 }
 
-function blocksToHtml(blocks) {
-  return blocks.map((b) => {
+/* ---------- 記述ごとの○×メモ ----------
+ * 本番で問題冊子に書き込むのと同じように、各記述に ○ × △ を付けられる。
+ * 正誤の組合せ表があれば、付けた印と矛盾する選択肢の行を薄くする（消去法）。 */
+const MEMO_CYCLE = ['', '○', '×', '△'];
+const memoLabel = (text) => { // 記述の記号（a〜e / ア〜オ / 1〜5）
+  const c = text.normalize('NFKC').trim()[0];
+  return /[a-eA-E]/.test(c) ? c.toLowerCase() : /[ア-オ1-5]/.test(c) ? c : null;
+};
+function applyMemo(box, blocks, marks) {
+  const byLabel = {};
+  blocks.forEach((b, i) => { if (b.type === 'p' && b.item && marks[i]) { const l = memoLabel(b.text); if (l) byLabel[l] = marks[i]; } });
+  box.querySelectorAll('table.grid').forEach((tbl) => {
+    const b = blocks[+tbl.dataset.bi];
+    const head = b.rows[0].map((c) => c.normalize('NFKC').toLowerCase());
+    if (!head.every((c) => /[a-eア-オ]/.test(c))) return;
+    tbl.querySelectorAll('tr').forEach((tr, ri) => {
+      if (ri === 0) return;
+      const vals = b.rows[ri].slice(-head.length);
+      const ok = head.every((l, k) => !byLabel[l] || byLabel[l] === '△'
+        || (byLabel[l] === '○' && vals[k] === '正') || (byLabel[l] === '×' && vals[k] === '誤'));
+      tr.classList.toggle('dim', !ok);
+    });
+  });
+}
+
+function blocksToHtml(blocks, marks) {
+  return blocks.map((b, bi) => {
+    if (b.type === 'p' && b.item && marks) {
+      return `<p class="item memo"><button class="mk ${marks[bi] ? 'on' : ''}" data-bi="${bi}" aria-label="メモ">${marks[bi] || ''}</button>${esc(b.text)}</p>`;
+    }
     if (b.type === 'p') return `<p class="${b.item ? 'item' : ''}">${esc(b.text)}</p>`;
     const w = Math.max(...b.rows.map((r) => r.length));
     const rows = b.rows.map((r, ri) => {
@@ -372,13 +400,14 @@ function blocksToHtml(blocks) {
       const cells = [...pad, ...r, ...(b.type === 'table' && !pad.length ? Array(w - r.length).fill('') : [])];
       return `<tr>${cells.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`;
     }).join('');
-    return `<table class="${b.type}">${rows}</table>`;
+    return `<table class="${b.type}" data-bi="${bi}">${rows}</table>`;
   }).join('');
 }
 
 const TEXT_SIZES = { 1: 16, 1.5: 19, 2: 23 };
 let viewMode = lsGet('viewMode', 'text');   // 'text' | 'pdf'
-async function showQuestion(q, box, zoom) {
+// memo: { marks: {ブロック番号: '○'|'×'|'△'}, save() } を渡すと○×メモが使える（テスト中のみ）
+async function showQuestion(q, box, zoom, memo) {
   if (viewMode === 'pdf') return renderQuestion(q, box, zoom);
   const my = ++renderToken;
   box.innerHTML = '<div class="loading">読み込み中…</div>';
@@ -395,7 +424,19 @@ async function showQuestion(q, box, zoom) {
       box.insertAdjacentHTML('afterbegin', '<div class="note" style="padding:6px 8px">複雑な表を含むため、PDFで表示しています。</div>');
       return;
     }
-    box.innerHTML = `<div class="qtext" style="font-size:${TEXT_SIZES[zoom] || 16}px">${blocksToHtml(blocks)}</div>`;
+    const marks = memo ? memo.marks : null;
+    box.innerHTML = `<div class="qtext" style="font-size:${TEXT_SIZES[zoom] || 16}px">${blocksToHtml(blocks, marks)}</div>`;
+    if (memo) {
+      applyMemo(box, blocks, marks);
+      box.querySelectorAll('button.mk').forEach((btn) => btn.addEventListener('click', () => {
+        const bi = +btn.dataset.bi;
+        const next = MEMO_CYCLE[(MEMO_CYCLE.indexOf(marks[bi] || '') + 1) % MEMO_CYCLE.length];
+        if (next) marks[bi] = next; else delete marks[bi];
+        btn.textContent = next; btn.classList.toggle('on', !!next);
+        applyMemo(box, blocks, marks);
+        memo.save();
+      }));
+    }
   } catch (e) {
     if (my === renderToken) box.innerHTML = `<div class="loading">表示できませんでした: ${esc(e.message)}</div>`;
   }
@@ -492,7 +533,8 @@ function runTest(cur) {
       <div class="dots">${cur.items.map((x, i) => `<button data-i="${i}" class="${x.chosen ? 'ans' : ''} ${i === cur.idx ? 'cur' : ''} ${x.again ? 'star' : ''}">${i + 1}</button>`).join('')}</div>
       <button class="big-btn" id="finish">解答を終えて採点する</button>
       <p class="muted" style="text-align:center">未解答 ${cur.items.filter((x) => !x.chosen).length} 問</p>`;
-    showQuestion(q, $('#qimg'), cur.zoom);
+    it.marks = it.marks || {};
+    showQuestion(q, $('#qimg'), cur.zoom, { marks: it.marks, save: () => lsSet('current', cur) });
     $('#viewmode').addEventListener('click', () => { viewMode = viewMode === 'text' ? 'pdf' : 'text'; lsSet('viewMode', viewMode); draw(); });
     $('#again').addEventListener('click', () => {
       it.again = !it.again; lsSet('current', cur);
