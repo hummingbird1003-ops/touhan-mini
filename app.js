@@ -401,6 +401,7 @@ async function showQuestion(q, box, zoom) {
   }
 }
 const viewBtnLabel = () => (viewMode === 'text' ? 'PDFで見る' : 'テキストで見る');
+const zoomLabel = (z) => `文字：${z === 1 ? '標準' : z === 1.5 ? '大' : '特大'}`;
 
 /* ---------- 画面: ホーム ---------- */
 function setTab(t) {
@@ -482,7 +483,7 @@ function runTest(cur) {
         <button class="btn again ${it.again ? 'on' : ''}" id="again">${it.again ? '★ またやりたい' : '☆ またやりたい'}</button>
         <span class="spacer"></span>
         <button class="btn" id="viewmode">${viewBtnLabel()}</button>
-        <button class="btn" id="zoom">文字 ${cur.zoom === 1 ? '標準' : cur.zoom === 1.5 ? '大' : '特大'}</button></div>
+        <button class="btn" id="zoom">${zoomLabel(cur.zoom)}</button></div>
       <div class="choices">${[1, 2, 3, 4, 5].map((n) => `<button data-c="${n}" class="${it.chosen === n ? 'sel' : ''}">${n}</button>`).join('')}</div>
       <div class="navrow">
         <button class="btn" id="prev" ${cur.idx === 0 ? 'disabled' : ''}>← 前へ</button>
@@ -590,7 +591,7 @@ function viewReview(t, i, zoom = 1) {
     <div class="row" style="margin-top:6px">
       <button class="btn again ${s?.again ? 'on' : ''}" id="again">${s?.again ? '★ またやりたい' : '☆ またやりたい'}</button>
       <span class="spacer"></span>
-      <button class="btn" id="viewmode">${viewBtnLabel()}</button><button class="btn" id="zoom">文字</button></div>
+      <button class="btn" id="viewmode">${viewBtnLabel()}</button><button class="btn" id="zoom">${zoomLabel(zoom)}</button></div>
     <div class="choices">${[1, 2, 3, 4, 5].map((n) => `<button disabled class="${q.a.includes(n) ? 'correct' : ''} ${it.chosen === n && !it.correct ? 'wrong' : ''} ${it.chosen === n && it.correct ? 'sel' : ''}">${n}</button>`).join('')}</div>
     <p>${it.correct ? '<span class="ok">正解</span>' : '<span class="ng">不正解</span>'}　正答は <b>${q.a.join('・')}</b>${it.chosen ? `、あなたの解答は ${it.chosen}` : '（未解答）'}</p>
     <p class="muted">この問題の通算：${s ? `${s.attempts}回中 ${s.right}回正解` : '-'}</p>
