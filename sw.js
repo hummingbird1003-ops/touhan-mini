@@ -1,5 +1,5 @@
 // オフラインでも使えるよう、アプリ本体と外部ライブラリをキャッシュする
-const CACHE = 'touhan-mini-v2';
+const CACHE = 'touhan-mini-v3';
 const ASSETS = [
   './', 'index.html', 'app.js', 'style.css', 'meta.json', 'manifest.webmanifest', 'icon.svg', 'icon-192.png',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',

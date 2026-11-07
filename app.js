@@ -106,21 +106,31 @@ function weightedPick(arr, wfn) {
 }
 const recencyW = (q) => 1 + Math.max(0, q.exam.year - 4) * 0.75;  // 新しい年度ほど出やすく（R8はR4の4倍）
 const DAY = 86400000;
+const AGAIN_DAYS = 7;   // 「またやりたい」をチェックしてから再出題するまでの日数
 
 function buildTest() {
   const now = Date.now();
   const items = [];
   for (const ch of [1, 2, 3, 4, 5]) {
     const pool = QUESTIONS.filter((q) => q.ch === ch && available(q));
-    const unseen = [], wrong = [], right = [];
+    const unseen = [], wrong = [], right = [], again = [];
     for (const q of pool) {
       const s = QSTATS.get(q.qid);
+      if (s && s.again) { // 「またやりたい」: 1週間は出さず、過ぎたら最優先
+        if (now - s.againAt >= AGAIN_DAYS * DAY) again.push(q);
+        continue;
+      }
       if (!s) unseen.push(q);
       else if (!s.lastCorrect) wrong.push(q);
       else if (now - s.lastAt > settings.recentDays * DAY) right.push(q);
     }
     const used = new Set();
     for (let k = 0; k < PLAN[ch]; k++) {
+      const due = again.filter((q) => !used.has(q.qid));
+      if (due.length) { // 古いチェックから順に
+        due.sort((a, b) => QSTATS.get(a.qid).againAt - QSTATS.get(b.qid).againAt);
+        used.add(due[0].qid); items.push({ qid: due[0].qid, ch, chosen: null }); continue;
+      }
       const r = Math.random();
       const order = r < settings.pWrong ? [wrong, unseen, right]
         : r < settings.pWrong + settings.pRight ? [right, unseen, wrong]
@@ -206,6 +216,192 @@ async function renderQuestion(q, box, zoom) {
   }
 }
 
+/* ---------- テキスト表示 ----------
+ * 取り込んだ公式PDFから、この端末の中で文字を取り出して組み直す（どこにも送信・保存しない）。
+ * ふりがな（小さい文字）は除き、行→段落にまとめ、正誤の組合せ表は表にする。 */
+const textCache = new Map();
+const MARK_RE = /^(【?問\s*[0-9０-９]+|[（(]\s*[a-eａ-ｅA-EＡ-Ｅア-オ]\s*[）)]|[a-eａ-ｅA-EＡ-Ｅ][\s　．.、)）]|[ア-オ][\s　．.、)）]|[1-5１-５][\s　．.、（(）)]|[①-⑳]|[・※〔［\[]|\(?[ｱ-ｵ]\))/;
+const GRID_RE = /^[\s　0-9０-９a-eａ-ｅア-オ正誤○×]+$/;
+
+async function extractText(q) {
+  if (textCache.has(q.qid)) return textCache.get(q.qid);
+  const items = [];
+  for (const sg of q.segs) {
+    const doc = await getDoc(q.exam.files[sg.f].sha256);
+    const page = await doc.getPage(sg.p);
+    const vp = page.getViewport({ scale: 1 });
+    const tc = await page.getTextContent();
+    const top = sg.y0 * vp.height, bottom = sg.y1 * vp.height;
+    for (const it of tc.items) {
+      const str = (it.str || '').replace(/[\u0000-\u001f\u007f]/g, '');
+      if (!str.trim()) continue;
+      const [x, y] = vp.convertToViewportPoint(it.transform[4], it.transform[5]);
+      const size = Math.hypot(it.transform[2], it.transform[3]) || it.height || 10;
+      if (y - size * 0.7 < top - 2 || y > bottom + 2) continue;
+      items.push({ str, x, y: y + sg.p * 10000, size, w: it.width || size * str.length });
+    }
+  }
+  if (!items.length) { textCache.set(q.qid, null); return null; }
+  const sizes = items.map((i) => i.size).sort((a, b) => a - b);
+  const med = sizes[Math.floor(sizes.length / 2)];
+  const body = items.filter((i) => i.size >= med * 0.7);   // ふりがなを除く
+  body.sort((a, b) => a.y - b.y || a.x - b.x);
+  // 行にまとめる
+  const lines = [];
+  for (const it of body) {
+    const ln = lines[lines.length - 1];
+    if (ln && Math.abs(it.y - ln.y) < med * 0.5) ln.items.push(it);
+    else lines.push({ y: it.y, items: [it] });
+  }
+  // 行ごとに、大きな空白でセルに分ける
+  for (const ln of lines) {
+    ln.items.sort((a, b) => a.x - b.x);
+    ln.cells = []; let cur = null, end = -1e9;
+    for (const it of ln.items) {
+      const gap = it.x - end;
+      if (!cur || gap > med * 1.5) { cur = { x: it.x, s: '' }; ln.cells.push(cur); }
+      else if (gap > med * 0.3 && !/\s$/.test(cur.s)) cur.s += ' ';
+      cur.s += it.str; end = it.x + it.w;
+    }
+    ln.cells.forEach((c) => { c.s = c.s.replace(/\s+/g, ' ').trim(); });
+    ln.cells = ln.cells.filter((c) => c.s);
+    // 「（　ａ　）は、…」のような空欄のかっこで分かれたセルはつなぎ直す
+    for (let k = 0; k < ln.cells.length - 1;) {
+      const a = ln.cells[k].s, b = ln.cells[k + 1].s;
+      if (/[（(]$/.test(a) || /^[）)]/.test(b) || (/^[（(]/.test(a) && a.length <= 3 && !/[）)]/.test(a))) {
+        ln.cells[k].s = `${a} ${b}`; ln.cells.splice(k + 1, 1);
+      } else k++;
+    }
+    ln.text = ln.cells.map((c) => c.s).join(' ');
+    ln.x = ln.items[0].x;
+  }
+  // 1行に選択肢が横並び（「1 ○○  2 ○○  3 ○○」）なら選択肢ごとの行に分ける
+  const CH_RE = /^([1-5１-５])[\s　]/;
+  const split = [];
+  for (const ln of lines) {
+    const m = ln.text && ln.text.match(CH_RE);
+    if (!m) { split.push(ln); continue; }
+    const parts = [];
+    let rest = ln.text, n = Number(String(m[1]).replace(/[１-５]/, (c) => '１２３４５'.indexOf(c) + 1));
+    for (;;) {
+      const nx = n + 1;
+      const re = new RegExp(`[\\s　]([${nx}${'１２３４５'[nx - 1] || ''}])[\\s　]`);
+      const k = nx <= 5 ? rest.search(re) : -1;
+      if (k < 0) { parts.push(rest); break; }
+      parts.push(rest.slice(0, k)); rest = rest.slice(k + 1); n = nx;
+    }
+    if (parts.length === 1) { split.push(ln); continue; }
+    parts.forEach((t, k) => split.push({ ...ln, y: ln.y + k * 0.01, text: t.trim(), cells: [{ s: t.trim() }] }));
+  }
+  lines.splice(0, lines.length, ...split);
+  // 段落・表に組み立てる
+  const blocks = [];
+  let prev = null;
+  for (const ln of lines) {
+    if (!ln.text) continue;
+    const gapY = prev ? ln.y - prev.y : 0;
+    const compact = ln.text.replace(/[\s　]/g, '');
+    const isGrid = compact.length <= 8 && GRID_RE.test(ln.text) && /[正誤○×]|^[a-eａ-ｅア-オ\s　]+$/.test(ln.text);
+    // 3列以上、または「成分名　分量」のような短い2列の行は表として扱う
+    const isTable = !isGrid && (ln.cells.length >= 3 || (ln.cells.length === 2 && !MARK_RE.test(ln.text)
+      && ln.cells[1].s.length <= 14 && ln.cells[0].s.length <= 30));
+    const last = blocks[blocks.length - 1];
+    // 空欄「（ ａ ）」で始まる行は、字下げされている場合だけ新しい段落（文の途中の折り返しを除く）
+    const blankStart = /^[（(]\s*[a-eａ-ｅA-EＡ-Ｅア-オ]\s*[）)]/.test(ln.text);
+    const isMark = MARK_RE.test(ln.text) && !(blankStart && prev && ln.x <= prev.x + med * 0.5);
+    if (isGrid || isTable) {
+      const row = isGrid ? [...compact] : ln.cells.map((c) => c.s);
+      const kind = isGrid ? 'grid' : 'table';
+      if (last && last.type === kind && gapY < med * 2.6) last.rows.push(row);
+      else if (kind === 'table' && last && last.type === 'grid' && last.rows.length === 1 && /^[a-eａ-ｅア-オ]+$/.test(last.rows[0].join(''))) {
+        // 「ａ ｂ ｃ」の見出し行 + 語句の組合せ表 → 1つの表にする
+        last.type = 'table'; last.head = true; last.rows.push(row);
+      } else blocks.push({ type: kind, rows: [row] });
+    } else if (last && last.type === 'p' && !isMark && gapY < med * 1.9) {
+      last.text += (/[A-Za-z0-9]$/.test(last.text) && /^[A-Za-z0-9]/.test(ln.text) ? ' ' : '') + ln.text;
+    } else {
+      blocks.push({ type: 'p', text: ln.text, item: isMark && !/^【?問/.test(ln.text) });
+    }
+    prev = ln;
+  }
+  textCache.set(q.qid, blocks);
+  return blocks;
+}
+
+// 表と表の間に段落が挟まる（＝表のセル内の折り返しが段落に化けた）場合は崩れているとみなす
+function isComplexTable(blocks) {
+  const kinds = blocks.map((b) => b.type);
+  const first = kinds.indexOf('table'), last = kinds.lastIndexOf('table');
+  return first >= 0 && last > first && kinds.slice(first, last).includes('p');
+}
+
+// AIに解説を頼むための文面（問題文はこの端末でPDFから取り出したもの）
+function blocksToPlain(blocks) {
+  return blocks.map((b) => (b.type === 'p' ? b.text : b.rows.map((r) => r.join('　')).join('\n'))).join('\n');
+}
+async function copyForAI(q, it) {
+  const blocks = await extractText(q).catch(() => null);
+  if (!blocks) { toast('この問題は文字を取り出せないため、コピーできません'); return; }
+  const lines = [
+    `以下は登録販売者試験の過去問（${q.exam.label} ${q.d}）です。`,
+    `正答は「${q.a.join('・')}」です。${it.chosen ? `私は「${it.chosen}」を選びました。` : '私は解答できませんでした。'}`,
+    '各選択肢・各記述が正しい理由／誤っている理由を、厚生労働省「登録販売者試験問題の作成に関する手引き」の内容に沿って、初学者にもわかるように解説してください。',
+    it.chosen && !it.correct ? '私の選んだ答えがなぜ誤りなのかも教えてください。' : '',
+    '覚え方のコツがあれば最後に添えてください。',
+    isComplexTable(blocks) ? '（※表を含む問題で、表の部分が崩れている場合があります）' : '',
+    '',
+    '――― 問題 ―――',
+    blocksToPlain(blocks),
+  ].filter((l) => l !== '');
+  const text = lines.join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta);
+    ta.select(); document.execCommand('copy'); ta.remove();
+  }
+  toast('コピーしました。GeminiなどのAIのチャットに貼り付けてください', 3500);
+}
+
+function blocksToHtml(blocks) {
+  return blocks.map((b) => {
+    if (b.type === 'p') return `<p class="${b.item ? 'item' : ''}">${esc(b.text)}</p>`;
+    const w = Math.max(...b.rows.map((r) => r.length));
+    const rows = b.rows.map((r, ri) => {
+      const pad = (b.type === 'grid' || (b.head && ri === 0)) ? Array(w - r.length).fill('') : [];   // 見出し行（ａｂｃｄ）は右に寄せる
+      const cells = [...pad, ...r, ...(b.type === 'table' && !pad.length ? Array(w - r.length).fill('') : [])];
+      return `<tr>${cells.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`;
+    }).join('');
+    return `<table class="${b.type}">${rows}</table>`;
+  }).join('');
+}
+
+const TEXT_SIZES = { 1: 16, 1.5: 19, 2: 23 };
+let viewMode = lsGet('viewMode', 'text');   // 'text' | 'pdf'
+async function showQuestion(q, box, zoom) {
+  if (viewMode === 'pdf') return renderQuestion(q, box, zoom);
+  const my = ++renderToken;
+  box.innerHTML = '<div class="loading">読み込み中…</div>';
+  try {
+    const blocks = await extractText(q);
+    if (my !== renderToken) return;
+    if (!blocks) { // 文字のないページ（画像）
+      await renderQuestion(q, box, zoom);
+      box.insertAdjacentHTML('afterbegin', '<div class="note" style="padding:6px 8px">この問題は文字を取り出せないため、PDFで表示しています。</div>');
+      return;
+    }
+    if (isComplexTable(blocks)) { // セル内で折り返す表はテキストでは崩れる
+      await renderQuestion(q, box, zoom);
+      box.insertAdjacentHTML('afterbegin', '<div class="note" style="padding:6px 8px">複雑な表を含むため、PDFで表示しています。</div>');
+      return;
+    }
+    box.innerHTML = `<div class="qtext" style="font-size:${TEXT_SIZES[zoom] || 16}px">${blocksToHtml(blocks)}</div>`;
+  } catch (e) {
+    if (my === renderToken) box.innerHTML = `<div class="loading">表示できませんでした: ${esc(e.message)}</div>`;
+  }
+}
+const viewBtnLabel = () => (viewMode === 'text' ? 'PDFで見る' : 'テキストで見る');
+
 /* ---------- 画面: ホーム ---------- */
 function setTab(t) {
   tab = t;
@@ -220,6 +416,8 @@ function viewHome() {
   const ready = [1, 2, 3, 4, 5].every((c, i) => byCh[i] >= PLAN[c]);
   const seen = pool.filter((q) => QSTATS.has(q.qid)).length;
   const wrongNow = pool.filter((q) => QSTATS.get(q.qid) && !QSTATS.get(q.qid).lastCorrect).length;
+  const flagged = pool.filter((q) => QSTATS.get(q.qid)?.again);
+  const flaggedDue = flagged.filter((q) => Date.now() - QSTATS.get(q.qid).againAt >= AGAIN_DAYS * DAY).length;
   const recent = TESTS.slice(-5).reverse();
   const resume = lsGet('current', null);
   $('#view').innerHTML = `
@@ -236,6 +434,7 @@ function viewHome() {
       <h2>進み具合</h2>
       <div class="muted">取り込み済み ${pool.length.toLocaleString()} 問中、解いた問題 ${seen.toLocaleString()} 問 ／ 最後に間違えたまま ${wrongNow} 問</div>
       <div class="progress" style="margin-top:8px"><div style="width:${pool.length ? (seen / pool.length) * 100 : 0}%"></div></div>
+      ${flagged.length ? `<div class="muted" style="margin-top:8px">★ またやりたい ${flagged.length} 問（うち出題待ち ${flaggedDue} 問）</div>` : ''}
     </div>
     <div class="card">
       <h2>最近の結果</h2>
@@ -279,17 +478,26 @@ function runTest(cur) {
         <span class="muted">${esc(q.exam.label)} ${esc(q.d)}</span></div>
       <div class="qimg" id="qimg"></div>
       ${q.note ? `<div class="note">※このページには${esc(q.d)}以外の問題も含まれます。${esc(q.d)}を解いてください。</div>` : ''}
-      <div class="row" style="justify-content:flex-end;margin-top:6px">
-        <button class="btn" id="zoom">文字の大きさ ${cur.zoom === 1 ? '標準' : cur.zoom === 1.5 ? '大' : '特大'}</button></div>
+      <div class="row" style="margin-top:6px">
+        <button class="btn again ${it.again ? 'on' : ''}" id="again">${it.again ? '★ またやりたい' : '☆ またやりたい'}</button>
+        <span class="spacer"></span>
+        <button class="btn" id="viewmode">${viewBtnLabel()}</button>
+        <button class="btn" id="zoom">文字 ${cur.zoom === 1 ? '標準' : cur.zoom === 1.5 ? '大' : '特大'}</button></div>
       <div class="choices">${[1, 2, 3, 4, 5].map((n) => `<button data-c="${n}" class="${it.chosen === n ? 'sel' : ''}">${n}</button>`).join('')}</div>
       <div class="navrow">
         <button class="btn" id="prev" ${cur.idx === 0 ? 'disabled' : ''}>← 前へ</button>
         <button class="btn" id="next" ${cur.idx === cur.items.length - 1 ? 'disabled' : ''}>次へ →</button>
       </div>
-      <div class="dots">${cur.items.map((x, i) => `<button data-i="${i}" class="${x.chosen ? 'ans' : ''} ${i === cur.idx ? 'cur' : ''}">${i + 1}</button>`).join('')}</div>
+      <div class="dots">${cur.items.map((x, i) => `<button data-i="${i}" class="${x.chosen ? 'ans' : ''} ${i === cur.idx ? 'cur' : ''} ${x.again ? 'star' : ''}">${i + 1}</button>`).join('')}</div>
       <button class="big-btn" id="finish">解答を終えて採点する</button>
       <p class="muted" style="text-align:center">未解答 ${cur.items.filter((x) => !x.chosen).length} 問</p>`;
-    renderQuestion(q, $('#qimg'), cur.zoom);
+    showQuestion(q, $('#qimg'), cur.zoom);
+    $('#viewmode').addEventListener('click', () => { viewMode = viewMode === 'text' ? 'pdf' : 'text'; lsSet('viewMode', viewMode); draw(); });
+    $('#again').addEventListener('click', () => {
+      it.again = !it.again; lsSet('current', cur);
+      if (it.again) toast(`チェックしました。${AGAIN_DAYS}日後以降に優先して出題します`);
+      draw();
+    });
     document.querySelectorAll('[data-c]').forEach((b) => b.addEventListener('click', () => {
       it.chosen = +b.dataset.c; lsSet('current', cur);
       if (cur.idx < cur.items.length - 1) { cur.idx++; lsSet('current', cur); draw(); } else draw();
@@ -323,13 +531,15 @@ async function finishTest(cur) {
     s.attempts++; it.correct ? s.right++ : s.wrong++;
     s.lastAt = now; s.lastCorrect = it.correct;
     s.history.push({ t: now, ok: it.correct, c: it.chosen });
+    // 「またやりたい」: 今回チェックしたら日付を更新、しなければ外す（再出題されたら一度リセット）
+    if (it.again) { s.again = true; s.againAt = now; } else { s.again = false; }
     QSTATS.set(it.qid, s);
     await DB.put('qstats', s);
   }
   const test = {
     startedAt: cur.startedAt, finishedAt: now,
     durationSec: Math.min(TIME_LIMIT, Math.round((now - cur.startedAt) / 1000)),
-    items: cur.items.map(({ qid, ch, chosen, correct }) => ({ qid, ch, chosen, correct })),
+    items: cur.items.map(({ qid, ch, chosen, correct, again }) => ({ qid, ch, chosen, correct, again: !!again })),
     score, perCh, grade: gradeOf(perCh, score, cur.items.length),
   };
   test.id = await DB.put('tests', test);
@@ -377,16 +587,29 @@ function viewReview(t, i, zoom = 1) {
     <div class="qhead"><b>見直し ${i + 1} / ${t.items.length}</b>
       <span class="chip c${q.ch}">${CH_SHORT[q.ch]}</span><span class="muted">${esc(q.exam.label)} ${esc(q.d)}</span></div>
     <div class="qimg" id="qimg"></div>
-    <div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn" id="zoom">文字の大きさ</button></div>
+    <div class="row" style="margin-top:6px">
+      <button class="btn again ${s?.again ? 'on' : ''}" id="again">${s?.again ? '★ またやりたい' : '☆ またやりたい'}</button>
+      <span class="spacer"></span>
+      <button class="btn" id="viewmode">${viewBtnLabel()}</button><button class="btn" id="zoom">文字</button></div>
     <div class="choices">${[1, 2, 3, 4, 5].map((n) => `<button disabled class="${q.a.includes(n) ? 'correct' : ''} ${it.chosen === n && !it.correct ? 'wrong' : ''} ${it.chosen === n && it.correct ? 'sel' : ''}">${n}</button>`).join('')}</div>
     <p>${it.correct ? '<span class="ok">正解</span>' : '<span class="ng">不正解</span>'}　正答は <b>${q.a.join('・')}</b>${it.chosen ? `、あなたの解答は ${it.chosen}` : '（未解答）'}</p>
     <p class="muted">この問題の通算：${s ? `${s.attempts}回中 ${s.right}回正解` : '-'}</p>
-    <p class="muted">解説は公式には公開されていません。テキストで該当箇所を確認しましょう。</p>
+    <button class="btn pri" id="copyai" style="width:100%;padding:12px;margin:4px 0 8px">🤖 AIに解説を聞く用にコピー</button>
+    <p class="muted">解説は公式には公開されていません。ボタンを押すと、問題文・正答・あなたの解答と「解説してください」という依頼文がコピーされます。GeminiなどのAIのチャットに貼り付けて聞いてください。AIの解説にも誤りがあり得るので、最終的にはテキストで確認しましょう。</p>
     <div class="navrow">
       <button class="btn" id="prev" ${i === 0 ? 'disabled' : ''}>← 前へ</button>
       <button class="btn" id="back">結果に戻る</button>
       <button class="btn" id="next" ${i === t.items.length - 1 ? 'disabled' : ''}>次へ →</button></div>`;
-  renderQuestion(q, $('#qimg'), zoom);
+  showQuestion(q, $('#qimg'), zoom);
+  $('#copyai').addEventListener('click', () => copyForAI(q, it));
+  $('#again').addEventListener('click', async () => { // 見直し画面からも付け外しできる
+    if (!s) return;
+    s.again = !s.again; if (s.again) s.againAt = Date.now();
+    await DB.put('qstats', s);
+    if (s.again) toast(`チェックしました。${AGAIN_DAYS}日後以降に優先して出題します`);
+    viewReview(t, i, zoom);
+  });
+  $('#viewmode').addEventListener('click', () => { viewMode = viewMode === 'text' ? 'pdf' : 'text'; lsSet('viewMode', viewMode); viewReview(t, i, zoom); });
   $('#zoom').addEventListener('click', () => viewReview(t, i, zoom === 1 ? 1.5 : zoom === 1.5 ? 2 : 1));
   $('#prev').addEventListener('click', () => viewReview(t, i - 1, zoom));
   $('#next').addEventListener('click', () => viewReview(t, i + 1, zoom));
