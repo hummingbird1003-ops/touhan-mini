@@ -19,9 +19,10 @@ const DEFAULT_SETTINGS = { pWrong: 0.35, pRight: 0.10, recentDays: 3 };
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const PDF_OPTS = {
-  cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
+  // cdnjs は cmaps / standard_fonts を配信していない（403）ため jsDelivr を使う
+  cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
   cMapPacked: true,
-  standardFontDataUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/standard_fonts/',
+  standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/standard_fonts/',
 };
 
 /* ---------- 小物 ---------- */

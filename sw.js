@@ -1,5 +1,5 @@
 // オフラインでも使えるよう、アプリ本体と外部ライブラリをキャッシュする
-const CACHE = 'touhan-mini-v1';
+const CACHE = 'touhan-mini-v2';
 const ASSETS = [
   './', 'index.html', 'app.js', 'style.css', 'meta.json', 'manifest.webmanifest', 'icon.svg', 'icon-192.png',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
@@ -23,7 +23,7 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(fetch(e.request).then((r) => {
       const copy = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); return r;
     }).catch(() => caches.match(e.request, { ignoreSearch: true })));
-  } else if (url.hostname === 'cdnjs.cloudflare.com') {
+  } else if (url.hostname === 'cdnjs.cloudflare.com' || url.hostname === 'cdn.jsdelivr.net') {
     e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((r) => {
       const copy = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); return r;
     })));
