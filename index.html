@@ -25,7 +25,8 @@
   <button data-tab="data"><span>📂</span>データ</button>
 </nav>
 
-<input type="file" id="filepick" accept=".pdf,.zip,application/pdf,application/zip" multiple hidden>
+<!-- 配布用の .dat（中身はZIP）も選べるよう、種類で絞り込まない -->
+<input type="file" id="filepick" multiple hidden>
 <input type="file" id="backuppick" accept=".json,application/json" hidden>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>

@@ -757,7 +757,8 @@ function viewData() {
   const isLocal = ['localhost', '127.0.0.1'].includes(location.hostname);
   $('#view').innerHTML = `
     <div class="card"><h2>過去問PDFの取り込み</h2>
-      <p class="muted">受け取ったZIPファイル、または公式サイトからダウンロードした問題PDFを選んでください（複数選択できます）。
+      <p class="muted">受け取ったファイル（touhan_kakomon.dat または .zip）を選んでください。
+      展開してしまった場合は、出てきたPDFをまとめて選んでも取り込めます（長押しで複数選択）。
       ファイルの中身で照合するので、ファイル名は変えても大丈夫です。</p>
       <button class="btn pri" id="pick">ファイルを選ぶ</button>
       ${isLocal ? '<button class="btn" id="devload">開発用: ローカルから全部読み込む</button>' : ''}
@@ -822,7 +823,10 @@ async function importFiles(fileList) {
   };
   for (const f of fileList) {
     if (stat) stat.textContent = `処理中: ${f.name}`;
-    if (/\.zip$/i.test(f.name) || f.type.includes('zip')) {
+    // ZIPかどうかは中身の先頭（PK\x03\x04）で判定する。Androidで展開されないよう拡張子を .dat にした配布用ファイルも読める
+    const head = new Uint8Array(await f.slice(0, 4).arrayBuffer());
+    const isZip = head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04;
+    if (isZip) {
       const zip = await JSZip.loadAsync(f);
       const entries = Object.values(zip.files).filter((z) => !z.dir && /\.pdf$/i.test(z.name));
       let i = 0;
